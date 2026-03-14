@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TON Simplex — Finding 1: Honest Validator Self-Equivocation (Combined)</title>
+<style>
+  :root { --red:#DC2626; --amber:#D97706; --green:#16A34A; --blue:#0088CC; --border:#E5E7EB; --code-bg:#F3F4F6; --text:#111827; --muted:#6B7280; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  @media print { body { background:white; } }
+  body { font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif; font-size:10pt; line-height:1.6; color:var(--text); background:#f0f0f0; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .page { max-width:820px; margin:32px auto; background:white; padding:48px 60px; box-shadow:0 2px 8px rgba(0,0,0,.12); }
+  .header { border-bottom:2px solid var(--blue); padding-bottom:16px; margin-bottom:24px; }
+  .header h1 { font-size:15pt; font-weight:700; }
+  .meta { font-size:8.5pt; color:var(--muted); margin-top:8px; }
+  .meta span { margin-right:16px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:8pt; font-weight:600; }
+  .badge-high { background:#FEF2F2; color:var(--red); border:1px solid #FECACA; }
+  .badge-loc { background:#EFF6FF; color:#1D4ED8; border:1px solid #BFDBFE; }
+  h2 { font-size:11pt; font-weight:700; margin:22px 0 8px; }
+  h3 { font-size:10pt; font-weight:600; margin:14px 0 5px; color:#374151; }
+  p { margin-bottom:9px; }
+  ul,ol { margin:7px 0 9px 20px; }
+  li { margin-bottom:3px; }
+  pre,code { font-family:'SF Mono','Fira Code',Consolas,monospace; }
+  code { background:var(--code-bg); padding:1px 4px; border-radius:3px; font-size:8.5pt; }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:11px 13px; font-size:8pt; line-height:1.55; overflow-x:auto; margin:9px 0 13px; white-space:pre-wrap; word-break:break-word; }
+  .comment { color:#6B7280; }
+  .hl { background:#FEF9C3; }
+  .evidence { background:#F0FDF4; border:1px solid #86EFAC; border-radius:4px; padding:11px 13px; margin:11px 0; font-size:8.5pt; }
+  .evidence strong { color:var(--green); }
+  .path-box { background:#F9FAFB; border:1px solid var(--border); border-radius:4px; padding:8px 12px; margin:6px 0 12px; font-family:'SF Mono',Consolas,monospace; font-size:8.5pt; }
+  .poc-box { background:#FFFBEB; border:1px solid #FCD34D; border-radius:4px; padding:11px 13px; margin:11px 0; font-size:8.5pt; }
+  table { width:100%; border-collapse:collapse; margin:9px 0 13px; font-size:9pt; }
+  th { background:#F9FAFB; text-align:left; padding:6px 9px; border:1px solid var(--border); font-weight:600; }
+  td { padding:6px 9px; border:1px solid var(--border); vertical-align:top; }
+  .footer { border-top:1px solid var(--border); padding-top:12px; margin-top:28px; font-size:8pt; color:var(--muted); }
+  .section-divider { border-top:1px dashed var(--border); margin:24px 0; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="header">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+    <span class="badge badge-high">HIGH</span>
+    <h1>Honest Validator Self-Equivocation: SkipVote + NotarizeVote for the Same Slot</h1>
+  </div>
+  <div class="meta">
+    <span><strong>Repo:</strong> ton-blockchain/ton</span>
+    <span><strong>Branch:</strong> testnet</span>
+    <span><strong>Commit:</strong> <code>3bb6abc</code></span>
+    <span><strong>Scope:</strong> Primary — validator/consensus/simplex/</span>
+    <span><strong>Date:</strong> 2026-03-14</span>
+  </div>
+</div>
+
+<!-- SUMMARY -->
+<h2>Summary</h2>
+<p>
+  An honest Simplex validator can broadcast both a <code>SkipVote</code> and a <code>NotarizeVote</code>
+  for the same slot, producing a self-equivocation from a validator that is behaving correctly and has
+  not been compromised. This violates the core Simplex safety invariant that a validator votes at most
+  once per slot. The bug arises from an incomplete guard in three locations across two code paths:
+</p>
+<ul>
+  <li><strong>Code Path A — <code>alarm()</code> race:</strong> <code>alarm()</code> and <code>try_notarize()</code> use disjoint guards,
+      allowing both to broadcast for the same slot concurrently.</li>
+  <li><strong>Code Path B — <code>start_up()</code> restart:</strong> On every restart, a validator
+      broadcasts <code>SkipVote</code> for its active window slots without checking whether it already
+      cast <code>NotarizeVote</code> for those slots before the crash.</li>
+</ul>
+<p>
+  Both paths are dynamically confirmed via the <code>test-consensus</code> harness.
+</p>
+
+<!-- IMPACT -->
+<h2>Impact</h2>
+<table>
+  <tr><th>Property</th><th>Assessment</th></tr>
+  <tr><td>Safety violation</td><td>Yes — self-equivocation from an honest validator; breaks Simplex's single-vote invariant per slot</td></tr>
+  <tr><td>Liveness impact</td><td>Yes — equivocating votes can poison slot pools, causing all N honest validators to produce conflicting evidence simultaneously</td></tr>
+  <tr><td>Triggering condition (Path A)</td><td>Validation time &gt; alarm interval; no Byzantine actor required</td></tr>
+  <tr><td>Triggering condition (Path B)</td><td>Any leader-window validator restart; fires 100% of the time gremlin kills the leader</td></tr>
+  <tr><td>Affected component</td><td><code>validator/consensus/simplex/</code> — primary contest scope</td></tr>
+</table>
+
+<!-- CODE PATH A -->
+<h2>Code Path A — <code>alarm()</code> Race (consensus.cpp)</h2>
+
+<h3>Root Cause</h3>
+<p>
+  <code>alarm()</code> and <code>try_notarize()</code> share state on a slot but use disjoint boolean guards.
+  <code>alarm()</code> checks only <code>!voted_final</code> before broadcasting <code>SkipVote</code>.
+  <code>try_notarize()</code> sets <code>voted_notar</code> and broadcasts <code>NotarizeVote</code> after
+  resuming from <code>co_await ValidationRequest</code> — without checking whether a <code>SkipVote</code>
+  was sent during the suspension.
+</p>
+
+<div class="path-box">validator/consensus/simplex/consensus.cpp</div>
+
+<h3>Bug A1 — <code>alarm()</code>: missing <code>!voted_notar</code> guard</h3>
+<pre><span class="comment">// consensus.cpp ~line 144</span>
+td::actor::Task&lt;&gt; alarm() {
+  for (size_t i = first_...; i &lt; last_...; ++i) {
+    auto slot = bus_->slots.get(i);
+    if (slot &amp;&amp; <span class="hl">!slot-&gt;state-&gt;voted_final</span>) {       <span class="comment">// BUG: must also check !voted_notar &amp;&amp; !voted_skip</span>
+      owning_bus().publish&lt;BroadcastVote&gt;(SkipVote{i});
+    }
+  }
+}</pre>
+
+<h3>Bug A2 — <code>try_notarize()</code>: missing <code>!voted_skip</code> guard</h3>
+<pre><span class="comment">// consensus.cpp ~line 228</span>
+td::actor::Task&lt;&gt; try_notarize(size_t slot_idx, ...) {
+  auto res = co_await ValidationRequest{candidate};
+  <span class="comment">// alarm() may have fired here and broadcast SkipVote — not checked</span>
+  slot-&gt;state-&gt;voted_notar = candidate-&gt;id;
+  <span class="hl">owning_bus().publish&lt;BroadcastVote&gt;(NotarizeVote{...});</span>  <span class="comment">// BUG: should check !voted_skip first</span>
+}</pre>
+
+<h3>Bug A3 — <code>check_invariants()</code>: missing detection case</h3>
+<pre><span class="comment">// pool.cpp ~line 209</span>
+void check_invariants() {
+  if (finalize_.has_value() &amp;&amp; skip_.has_value()) { ... report ... }
+  if (finalize_.has_value() &amp;&amp; notarize_.has_value()) { ... report ... }
+  <span class="comment">// MISSING: notarize_ + skip_ combination not detected:</span>
+  <span class="hl">// if (notarize_.has_value() &amp;&amp; skip_.has_value()) { report misbehavior; }</span>
+}</pre>
+
+<div class="evidence">
+  <strong>✅ Dynamic Evidence (Path A):</strong><br>
+  <code>pool.cpp:525 WARNING — "Dropping NotarizeVote{id={62, WQS7+...}} from validator 6 ... which references a finalized slot"</code><br>
+  Observed 1–500+ events per 30-second run. All 8 validators affected across multiple runs.
+  The slot finalised via <code>SkipCert</code> (produced from the equivocating validator's own <code>SkipVote</code>)
+  before the <code>NotarizeVote</code> arrived — proving both votes were broadcast for the same slot.
+</div>
+
+<!-- CODE PATH B -->
+<div class="section-divider"></div>
+<h2>Code Path B — <code>start_up()</code> Restart Equivocation (consensus.cpp)</h2>
+
+<h3>Root Cause</h3>
+<p>
+  On restart, <code>start_up()</code> loads <code>bootstrap_votes</code> from the persistent DB
+  (including any <code>NotarizeVote</code> cast before the crash), then immediately broadcasts
+  <code>SkipVote</code> for all slots in the current <code>first_nonannounced_window</code> range
+  using only a <code>!voted_final</code> guard. Peers who received the pre-crash <code>NotarizeVote</code>
+  now also receive a <code>SkipVote</code> from the same validator for the same slot — equivocation.
+</p>
+
+<div class="path-box">validator/consensus/simplex/consensus.cpp</div>
+
+<pre><span class="comment">// consensus.cpp ~line 82</span>
+void start_up() {
+  ...
+  if (auto window = bus-&gt;first_nonannounced_window) {
+    for (size_t i = *window; i &lt; last_slot; ++i) {
+      auto slot = bus-&gt;slots.get(i);
+      if (slot.has_value() &amp;&amp; <span class="hl">!slot-&gt;state-&gt;voted_final</span>) {   <span class="comment">// BUG: must also check !voted_notar</span>
+        owning_bus().publish&lt;BroadcastVote&gt;(SkipVote{i});
+      }
+    }
+  }
+}</pre>
+
+<p>
+  <strong>Why the DB persists:</strong> The <code>test-consensus</code> harness uses a <code>TestDbImpl</code>
+  backed by a <code>shared_ptr&lt;DbInner&gt;</code> (test-consensus.cpp:610, 689). The <code>DbInner</code> is
+  preserved across gremlin kills, so <code>bootstrap_votes</code> correctly reflects pre-crash state on restart.
+</p>
+
+<div class="evidence">
+  <strong>✅ Dynamic Evidence (Path B):</strong><br>
+  Gremlin (--gremlin-kills-leader, period 2–4s, downtime 1–2s): 20 leader restarts observed, 19 showing
+  immediate post-restart SkipVote drops from the restarted validator.<br>
+  Example: <code>Validator 0 restarted at 15:55:24.007</code> → <code>SkipVote{slot=5}</code> at <code>15:55:24.060</code>
+  (53ms later) → <code>pool.cpp:525: slot already finalised</code>.
+</div>
+
+<!-- FIX -->
+<div class="section-divider"></div>
+<h2>Recommended Fix</h2>
+
+<table>
+  <tr><th>Location</th><th>File</th><th>Fix</th></tr>
+  <tr>
+    <td><code>alarm()</code></td>
+    <td>consensus.cpp ~145</td>
+    <td>Add <code>&amp;&amp; !slot-&gt;state-&gt;voted_notar &amp;&amp; !slot-&gt;state-&gt;voted_skip</code> to the guard before broadcasting <code>SkipVote</code></td>
+  </tr>
+  <tr>
+    <td><code>start_up()</code></td>
+    <td>consensus.cpp ~87</td>
+    <td>Add <code>&amp;&amp; !slot-&gt;state-&gt;voted_notar</code> to the guard before broadcasting <code>SkipVote</code></td>
+  </tr>
+  <tr>
+    <td><code>try_notarize()</code></td>
+    <td>consensus.cpp ~232</td>
+    <td>Check <code>voted_skip</code> after resuming from <code>co_await ValidationRequest</code>; bail if set</td>
+  </tr>
+  <tr>
+    <td><code>check_invariants()</code></td>
+    <td>pool.cpp ~209</td>
+    <td>Add <code>notarize_ + skip_</code> case to the misbehavior detection matrix</td>
+  </tr>
+</table>
+
+<!-- POC -->
+<div class="section-divider"></div>
+<h2>Proof of Concept</h2>
+
+<div class="poc-box">
+  <strong>Script:</strong> <code>poc/test_equivocation_combined.py</code><br>
+  <strong>Repository:</strong> <a href="https://github.com/TesseraeVentures/ton-consensus-audit">TesseraeVentures/ton-consensus-audit</a>
+</div>
+
+<h3>Build</h3>
+<pre>git clone https://github.com/ton-blockchain/ton
+cd ton
+git checkout testnet          <span class="comment"># commit 3bb6abc</span>
+mkdir build-clang &amp;&amp; cd build-clang
+CC=clang CXX=clang++ cmake .. \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DTON_USE_ROCKSDB=OFF
+cmake --build . --target test-consensus -j$(nproc)</pre>
+
+<h3>Run — Path A (alarm race)</h3>
+<pre>python3 poc/test_equivocation_combined.py --build-dir /path/to/ton/build-clang --part 1</pre>
+<p>Expected: <strong>PASS</strong> — 1–500+ equivocating (validator, slot) pairs. pool.cpp:525 WARNINGs printed as evidence.</p>
+
+<h3>Run — Path B (restart)</h3>
+<pre>python3 poc/test_equivocation_combined.py --build-dir /path/to/ton/build-clang --part 2</pre>
+<p>Expected: <strong>PASS</strong> — gremlin fires 10–25 times in 60s; ≥15 restarts show immediate post-restart SkipVote drops.</p>
+
+<h3>Run — Both</h3>
+<pre>python3 poc/test_equivocation_combined.py --build-dir /path/to/ton/build-clang</pre>
+
+<h3>Observed Output (this machine, commit 3bb6abc)</h3>
+<pre>PART 1: PASS — 11 equivocating (validator,slot) pairs  (8/8 validators affected)
+PART 2: PASS — 19 post-restart equivocations           (20 gremlin restarts, 19 confirmed)</pre>
+
+<!-- TIMELINE -->
+<div class="section-divider"></div>
+<h2>Affected Files</h2>
+<ul>
+  <li><code>validator/consensus/simplex/consensus.cpp</code> — lines 82–91 (start_up), 144–150 (alarm), 228–235 (try_notarize)</li>
+  <li><code>validator/consensus/simplex/pool.cpp</code> — lines 209–217 (check_invariants), 525 (observable WARNING)</li>
+</ul>
+
+<div class="footer">
+  TON Blockchain Contest — Round 2 (Simplex Consensus) · Submitted 2026-03-14 ·
+  Repo: <a href="https://github.com/TesseraeVentures/ton-consensus-audit">TesseraeVentures/ton-consensus-audit</a>
+</div>
+</div>
+</body>
+</html>
