@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TON Simplex — Finding 3: ConflictingCandidateAndCertificate Stores No Evidence</title>
+<style>
+  :root { --red:#DC2626; --amber:#D97706; --green:#16A34A; --blue:#0088CC; --border:#E5E7EB; --code-bg:#F3F4F6; --text:#111827; --muted:#6B7280; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  @media print { body { background:white; } }
+  body { font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif; font-size:10pt; line-height:1.6; color:var(--text); background:#f0f0f0; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .page { max-width:820px; margin:32px auto; background:white; padding:48px 60px; box-shadow:0 2px 8px rgba(0,0,0,.12); }
+  .header { border-bottom:2px solid var(--blue); padding-bottom:16px; margin-bottom:24px; }
+  .header h1 { font-size:15pt; font-weight:700; }
+  .meta { font-size:8.5pt; color:var(--muted); margin-top:8px; }
+  .meta span { margin-right:16px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:8pt; font-weight:600; }
+  .badge-medium { background:#FFFBEB; color:var(--amber); border:1px solid #FDE68A; }
+  h2 { font-size:11pt; font-weight:700; margin:22px 0 8px; }
+  h3 { font-size:10pt; font-weight:600; margin:14px 0 5px; }
+  p { margin-bottom:9px; }
+  ul,ol { margin:7px 0 9px 20px; }
+  li { margin-bottom:3px; }
+  pre,code { font-family:'SF Mono','Fira Code',Consolas,monospace; }
+  code { background:var(--code-bg); padding:1px 4px; border-radius:3px; font-size:8.5pt; }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:11px 13px; font-size:8pt; line-height:1.55; overflow-x:auto; margin:9px 0 13px; white-space:pre-wrap; word-break:break-word; }
+  .comment { color:#6B7280; }
+  table { width:100%; border-collapse:collapse; margin:9px 0 13px; font-size:9pt; }
+  th { background:#F9FAFB; text-align:left; padding:6px 9px; border:1px solid var(--border); font-weight:600; }
+  td { padding:6px 9px; border:1px solid var(--border); vertical-align:top; }
+  .footer { border-top:1px solid var(--border); padding-top:12px; margin-top:28px; font-size:8pt; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="header">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+    <span class="badge badge-medium">MEDIUM</span>
+    <h1>ConflictingCandidateAndCertificate Misbehavior Stores No Cryptographic Evidence</h1>
+  </div>
+  <div class="meta">
+    <span><strong>Repo:</strong> ton-blockchain/ton</span>
+    <span><strong>Branch:</strong> testnet</span>
+    <span><strong>Commit:</strong> <code>3bb6abc</code></span>
+    <span><strong>Scope:</strong> Primary — validator/consensus/simplex/</span>
+    <span><strong>Date:</strong> 2026-03-14</span>
+  </div>
+</div>
+
+<h2>Summary</h2>
+<p>Every call site that creates a <code>ConflictingCandidateAndCertificate</code> misbehavior report passes no arguments — the candidate and conflicting certificate are commented out in every caller. The misbehavior class stores nothing and produces an empty report. A Byzantine leader can propose candidates that conflict with existing certificates and face zero on-chain consequence, because the detecting node cannot prove the misbehavior to peers or to the elector contract.</p>
+
+<h2>The Factory and the Call Sites</h2>
+<p>The <code>ConflictingCandidateAndCertificate</code> class in <code>misbehavior.h</code> accepts no arguments:</p>
+<pre><span class="comment">// validator/consensus/simplex/misbehavior.h</span>
+class ConflictingCandidateAndCertificate : public Misbehavior {
+ public:
+  static MisbehaviorRef create() {      <span class="comment">// no candidate or certificate parameter</span>
+    return td::make_ref&lt;ConflictingCandidateAndCertificate&gt;();
+  }
+  ConflictingCandidateAndCertificate() {}   <span class="comment">// empty — nothing stored</span>
+};</pre>
+
+<p>There are four call sites in <code>pool.cpp</code>, all with the evidence arguments commented out:</p>
+<pre><span class="comment">// pool.cpp — line 646</span>
+return resolve_with(ConflictingCandidateAndCertificate::create(
+    <span class="comment">/* candidate, last_finalization_cert */</span>));
+
+<span class="comment">// pool.cpp — line 656</span>
+return resolve_with(ConflictingCandidateAndCertificate::create(
+    <span class="comment">/* candidate, notarization_cert(slot) */</span>));
+
+<span class="comment">// pool.cpp — line 666</span>
+return resolve_with(ConflictingCandidateAndCertificate::create(
+    <span class="comment">/* candidate, notarization_cert(first_nonfinalized_slot_ - 1) */</span>));
+
+<span class="comment">// pool.cpp — line 676</span>
+return resolve_with(ConflictingCandidateAndCertificate::create(
+    <span class="comment">/* candidate, notarization_cert(slot) */</span>));</pre>
+
+<p>The commented-out parameters show exactly what evidence should be captured. The detection logic is present and working; only the evidence collection is missing.</p>
+
+<h2>Conflict Scenarios Affected</h2>
+<table>
+  <tr><th>Location</th><th>Detected Condition</th><th>Missing Evidence</th></tr>
+  <tr><td>pool.cpp:646</td><td>Candidate's parent slot already finalised (parent chain invalid)</td><td>Candidate + last finalization cert</td></tr>
+  <tr><td>pool.cpp:656</td><td>Candidate's slot already notarised with a different block</td><td>Candidate + notarization cert for slot</td></tr>
+  <tr><td>pool.cpp:666</td><td>Candidate's parent differs from the finalised parent at same depth</td><td>Candidate + notarization cert for last finalised slot</td></tr>
+  <tr><td>pool.cpp:676</td><td>Candidate's parent slot notarised with a different block</td><td>Candidate + notarization cert for parent slot</td></tr>
+</table>
+
+<h2>Impact</h2>
+<p>A misbehavior report without cryptographic evidence:</p>
+<ul>
+  <li>Cannot be forwarded to other validators — they cannot verify the claim independently</li>
+  <li>Cannot support an on-chain slashing transaction — the elector contract requires signed, verifiable proof</li>
+  <li>Makes the detection purely local and silent — the wider network never learns of the misbehavior</li>
+</ul>
+<p>A Byzantine leader can freely propose candidates that conflict with existing certificates. Each conflicting proposal is detected locally (resolver returns the misbehavior) but has no deterrent effect — the leader faces no penalty and the network gains no accountability signal.</p>
+
+<h2>Fix</h2>
+<p>Add candidate and certificate parameters to <code>ConflictingCandidateAndCertificate::create()</code> and store them. Implement serialisation so the report can be forwarded to other nodes and submitted on-chain:</p>
+<pre><span class="comment">// misbehavior.h — proposed fix</span>
+class ConflictingCandidateAndCertificate : public Misbehavior {
+  CandidateId candidate;
+  Certificate&lt;NotarizeVote&gt; cert;   <span class="comment">// or FinalizeVote depending on conflict type</span>
+ public:
+  static MisbehaviorRef create(CandidateId candidate, Certificate&lt;NotarizeVote&gt; cert) {
+    return td::make_ref&lt;ConflictingCandidateAndCertificate&gt;(candidate, std::move(cert));
+  }
+  td::BufferSlice serialize() const override;   <span class="comment">// implement for on-chain submission</span>
+};</pre>
+<p>Each call site should then pass the actual candidate and certificate rather than the commented-out placeholders.</p>
+
+<div class="footer">
+  TON Blockchain Contest Round 2 — Primary scope finding. Submitted by TesseraeVentures.
+</div>
+</div>
+</body>
+</html>

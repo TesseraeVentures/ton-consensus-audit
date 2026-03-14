@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TON Simplex — Finding 4: Three Misbehavior Detection FIXMEs Never Implemented</title>
+<style>
+  :root { --red:#DC2626; --amber:#D97706; --green:#16A34A; --blue:#0088CC; --border:#E5E7EB; --code-bg:#F3F4F6; --text:#111827; --muted:#6B7280; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  @media print { body { background:white; } }
+  body { font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif; font-size:10pt; line-height:1.6; color:var(--text); background:#f0f0f0; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .page { max-width:820px; margin:32px auto; background:white; padding:48px 60px; box-shadow:0 2px 8px rgba(0,0,0,.12); }
+  .header { border-bottom:2px solid var(--blue); padding-bottom:16px; margin-bottom:24px; }
+  .header h1 { font-size:15pt; font-weight:700; }
+  .meta { font-size:8.5pt; color:var(--muted); margin-top:8px; }
+  .meta span { margin-right:16px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:8pt; font-weight:600; }
+  .badge-medium { background:#FFFBEB; color:var(--amber); border:1px solid #FDE68A; }
+  h2 { font-size:11pt; font-weight:700; margin:22px 0 8px; }
+  h3 { font-size:10pt; font-weight:600; margin:14px 0 5px; }
+  p { margin-bottom:9px; }
+  ul,ol { margin:7px 0 9px 20px; }
+  li { margin-bottom:3px; }
+  pre,code { font-family:'SF Mono','Fira Code',Consolas,monospace; }
+  code { background:var(--code-bg); padding:1px 4px; border-radius:3px; font-size:8.5pt; }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:11px 13px; font-size:8pt; line-height:1.55; overflow-x:auto; margin:9px 0 13px; white-space:pre-wrap; word-break:break-word; }
+  .comment { color:#6B7280; }
+  table { width:100%; border-collapse:collapse; margin:9px 0 13px; font-size:9pt; }
+  th { background:#F9FAFB; text-align:left; padding:6px 9px; border:1px solid var(--border); font-weight:600; }
+  td { padding:6px 9px; border:1px solid var(--border); vertical-align:top; }
+  .footer { border-top:1px solid var(--border); padding-top:12px; margin-top:28px; font-size:8pt; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="header">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+    <span class="badge badge-medium">MEDIUM</span>
+    <h1>Three Misbehavior Detection Code Paths Silently Drop Byzantine Behaviour</h1>
+  </div>
+  <div class="meta">
+    <span><strong>Repo:</strong> ton-blockchain/ton</span>
+    <span><strong>Branch:</strong> testnet</span>
+    <span><strong>Commit:</strong> <code>3bb6abc</code></span>
+    <span><strong>Scope:</strong> Primary — validator/consensus/simplex/consensus.cpp</span>
+    <span><strong>Date:</strong> 2026-03-14</span>
+  </div>
+</div>
+
+<h2>Summary</h2>
+<p>Three separate code paths in <code>consensus.cpp</code> detect a Byzantine validator behaviour and then do nothing — the violations are logged (in some cases not even that) and execution continues. Each location contains a <code>// FIXME: Report misbehavior</code> comment acknowledging the omission. Byzantine leaders can exploit all three silently dropped cases to degrade liveness without facing any on-chain consequence.</p>
+
+<h2>The Three Locations</h2>
+
+<h3>1. Candidate with invalid parent structure (consensus.cpp:174)</h3>
+<pre><span class="comment">// consensus.cpp — CandidateReceived handler, line 172–175</span>
+if (candidate-&gt;parent_id.has_value()
+    &amp;&amp; candidate-&gt;parent_id-&gt;slot &gt;= candidate-&gt;id.slot) {
+  <span class="comment">// FIXME: report misbehavior</span>
+  return;
+}</pre>
+<p>A candidate proposing a parent whose slot index is not strictly less than its own slot is structurally invalid — the parent would be at the same height or ahead of the candidate in the chain. The validator correctly rejects it, but files no misbehavior report. The leader that sent this candidate faces no penalty.</p>
+
+<h3>2. Leader proposes two different candidates for the same slot (consensus.cpp:180)</h3>
+<pre><span class="comment">// consensus.cpp — CandidateReceived handler, line 177–181</span>
+if (slot-&gt;state-&gt;pending_block.has_value()) {
+  if (slot-&gt;state-&gt;pending_block.value()-&gt;id != candidate-&gt;id) {
+    <span class="comment">// FIXME: Report misbehavior</span>
+  }
+  return;
+}</pre>
+<p>If a second, different candidate for the same slot arrives from the same leader, this is proposal equivocation — the leader is broadcasting two conflicting blocks. The validator silently ignores the duplicate. No misbehavior report is filed, and the leader can repeat this freely to waste validator resources (re-triggering validation on each candidate) with no deterrent.</p>
+
+<h3>3. Block candidate fails validation (consensus.cpp:227)</h3>
+<pre><span class="comment">// consensus.cpp — try_notarize(), line 224–228</span>
+if (validation_result.has&lt;CandidateReject&gt;()) {
+  LOG(WARNING) &lt;&lt; "Candidate " &lt;&lt; candidate-&gt;id
+               &lt;&lt; " is rejected: " &lt;&lt; validation_result.get&lt;CandidateReject&gt;().reason;
+  <span class="comment">// FIXME: Report misbehavior</span>
+  co_return {};
+}</pre>
+<p>When full block validation rejects a candidate (<code>CandidateReject</code>), the rejection is logged but not reported as misbehavior. A Byzantine leader can submit invalid blocks — blocks that pass superficial checks but fail validation — to occupy validators' validation slots (the <code>ValidationRequest</code> co_await), slow consensus, and consume bandwidth without facing any slashing risk.</p>
+
+<h2>Combined Impact</h2>
+<table>
+  <tr><th>Location</th><th>Line</th><th>Byzantine Action</th><th>Effect on Network</th></tr>
+  <tr><td>Parent slot check</td><td>174</td><td>Propose candidate with parent_slot ≥ own slot</td><td>Wastes processing; no penalty</td></tr>
+  <tr><td>Duplicate candidate</td><td>180</td><td>Send two different blocks for same slot</td><td>Forces re-validation; no penalty</td></tr>
+  <tr><td>Invalid block</td><td>227</td><td>Send block that passes early checks but fails full validation</td><td>Occupies ValidationRequest slot; slows consensus; no penalty</td></tr>
+</table>
+
+<p>These three paths represent a systematic gap in the misbehavior accountability layer. Individually, each is a moderate nuisance. Combined, a Byzantine leader can cycle through all three strategies to maximise disruption while remaining invisible to the slashing system.</p>
+
+<h2>Fix</h2>
+<p>Implement misbehavior reporting at each location. For cases 1 and 2, the evidence is available in scope (the candidate itself and, for case 2, the earlier <code>pending_block</code>). For case 3, the <code>CandidateReject</code> reason and the candidate are both available:</p>
+<pre><span class="comment">// Case 2 fix — dual-candidate equivocation</span>
+if (slot-&gt;state-&gt;pending_block.value()-&gt;id != candidate-&gt;id) {
+  owning_bus().publish&lt;ReportMisbehavior&gt;(
+    ProposalEquivocation::create(slot-&gt;state-&gt;pending_block.value(), candidate)).start().detach();
+  return;
+}
+
+<span class="comment">// Case 3 fix — invalid block proposal</span>
+if (validation_result.has&lt;CandidateReject&gt;()) {
+  owning_bus().publish&lt;ReportMisbehavior&gt;(
+    InvalidCandidateProposal::create(candidate, validation_result.get&lt;CandidateReject&gt;())).start().detach();
+  co_return {};
+}</pre>
+
+<div class="footer">
+  TON Blockchain Contest Round 2 — Primary scope finding. Submitted by TesseraeVentures.
+</div>
+</div>
+</body>
+</html>

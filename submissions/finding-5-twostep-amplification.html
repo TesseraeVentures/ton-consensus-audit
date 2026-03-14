@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TON Overlay — Finding 5: TwoStep Broadcast Amplification</title>
+<style>
+  :root { --red:#DC2626; --amber:#D97706; --green:#16A34A; --blue:#0088CC; --border:#E5E7EB; --code-bg:#F3F4F6; --text:#111827; --muted:#6B7280; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  @media print { body { background:white; } }
+  body { font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif; font-size:10pt; line-height:1.6; color:var(--text); background:#f0f0f0; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .page { max-width:820px; margin:32px auto; background:white; padding:48px 60px; box-shadow:0 2px 8px rgba(0,0,0,.12); }
+  .header { border-bottom:2px solid var(--blue); padding-bottom:16px; margin-bottom:24px; }
+  .header h1 { font-size:15pt; font-weight:700; }
+  .meta { font-size:8.5pt; color:var(--muted); margin-top:8px; }
+  .meta span { margin-right:16px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:8pt; font-weight:600; }
+  .badge-medium { background:#FFFBEB; color:var(--amber); border:1px solid #FDE68A; }
+  .badge-secondary { background:#EFF6FF; color:var(--blue); border:1px solid #BFDBFE; }
+  h2 { font-size:11pt; font-weight:700; margin:22px 0 8px; }
+  h3 { font-size:10pt; font-weight:600; margin:14px 0 5px; }
+  p { margin-bottom:9px; }
+  ul,ol { margin:7px 0 9px 20px; }
+  li { margin-bottom:3px; }
+  pre,code { font-family:'SF Mono','Fira Code',Consolas,monospace; }
+  code { background:var(--code-bg); padding:1px 4px; border-radius:3px; font-size:8.5pt; }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:11px 13px; font-size:8pt; line-height:1.55; overflow-x:auto; margin:9px 0 13px; white-space:pre-wrap; word-break:break-word; }
+  .comment { color:#6B7280; }
+  .hl { background:#FEF9C3; }
+  table { width:100%; border-collapse:collapse; margin:9px 0 13px; font-size:9pt; }
+  th { background:#F9FAFB; text-align:left; padding:6px 9px; border:1px solid var(--border); font-weight:600; }
+  td { padding:6px 9px; border:1px solid var(--border); vertical-align:top; text-align:right; }
+  td:first-child { text-align:left; }
+  .footer { border-top:1px solid var(--border); padding-top:12px; margin-top:28px; font-size:8pt; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="header">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+    <span class="badge badge-medium">MEDIUM</span>
+    <span class="badge badge-secondary">Secondary Scope — overlay/</span>
+    <h1>TwoStep Broadcast: Deduplication Check Placed After Rebroadcast</h1>
+  </div>
+  <div class="meta">
+    <span><strong>Repo:</strong> ton-blockchain/ton</span>
+    <span><strong>Branch:</strong> testnet</span>
+    <span><strong>Commit:</strong> <code>3bb6abc</code></span>
+    <span><strong>Scope:</strong> Secondary — overlay/broadcast-twostep.cpp</span>
+    <span><strong>Date:</strong> 2026-03-14</span>
+  </div>
+</div>
+
+<h2>Summary</h2>
+<p>In the TwoStep overlay broadcast protocol, <code>rebroadcast()</code> is called before the <code>is_delivered()</code> deduplication check in both the simple and FEC broadcast code paths. Any node can replay a previously seen broadcast (within the ±20-second timestamp window) and cause every relay node to forward the duplicate to all N−1 peers before recognising it as a duplicate. This enables O(N²) bandwidth amplification per replay.</p>
+
+<h2>Vulnerable Code</h2>
+
+<h3>Simple broadcast path (lines 313–316)</h3>
+<pre><span class="comment">// overlay/broadcast-twostep.cpp — process_broadcast(), simple path</span>
+if (will_rebroadcast) {
+  rebroadcast(overlay, bcast_src_adnl_id, serialize_tl_object(broadcast, true));  <span class="comment">// line 314 — relays to N-1 peers</span>
+}
+if (overlay-&gt;is_delivered(broadcast_id)) { return; }  <span class="comment">// line 316 — dedup check too late</span>
+overlay-&gt;register_delivered_broadcast(broadcast_id);</pre>
+
+<h3>FEC broadcast path (lines 346–352)</h3>
+<pre><span class="comment">// overlay/broadcast-twostep.cpp — process_broadcast(), FEC path</span>
+if (will_rebroadcast) {
+  rebroadcast(overlay, bcast_src_adnl_id, serialize_tl_object(broadcast, true));  <span class="comment">// line 347 — relays to N-1 peers</span>
+}
+auto it = broadcasts_.find(broadcast_id);
+bool is_new = (it == broadcasts_.end());
+if (is_new) {
+  if (overlay-&gt;is_delivered(broadcast_id)) { return; }  <span class="comment">// line 352 — dedup check too late</span>
+}</pre>
+
+<p>Both paths share the same structural problem: the relay decision is made (and executed) before the deduplication check. The <code>rebroadcast()</code> implementation iterates all peers unconditionally:</p>
+<pre><span class="comment">// overlay/broadcast-twostep.cpp — rebroadcast()</span>
+void BroadcastsTwostep::rebroadcast(OverlayImpl *overlay, ...) {
+  overlay-&gt;iterate_all_peers([&amp;](const adnl::AdnlNodeIdShort &amp;peer_id, OverlayPeer &amp;) {
+    if (peer_id != bcast_src_adnl_id &amp;&amp; peer_id != overlay-&gt;local_id()) {
+      td::actor::send_closure(overlay-&gt;adnl(), &amp;adnl::Adnl::send_message, ...);
+    }
+  });
+}</pre>
+
+<h2>Impact</h2>
+<p>A single replayed broadcast causes each receiving relay node to immediately forward it to all other peers before checking whether it has already been delivered. For an N-node overlay:</p>
+
+<table>
+  <tr><th>Network size (N)</th><th>Relay nodes</th><th>Messages per replay</th><th>Amplification factor</th></tr>
+  <tr><td>10</td><td>9</td><td>72</td><td>72×</td></tr>
+  <tr><td>50</td><td>49</td><td>2,352</td><td>2,352×</td></tr>
+  <tr><td>100</td><td>99</td><td>9,702</td><td>9,702×</td></tr>
+  <tr><td>300</td><td>299</td><td>89,402</td><td>89,402×</td></tr>
+</table>
+
+<p>The timestamp check (<code>check_date</code>) accepts messages up to 20 seconds in each direction (a 40-second replay window). Within this window, a Byzantine node can repeatedly replay any broadcast it has previously received, sustaining elevated bandwidth consumption across the overlay with minimal outbound effort.</p>
+<p>There is no per-sender deduplication or rate limiting on the relay path, and <code>check_broadcast()</code> in <code>private-overlay.cpp</code> unconditionally accepts all overlay broadcasts without content-level filtering:</p>
+<pre><span class="comment">// validator/consensus/private-overlay.cpp</span>
+void check_broadcast(..., td::Promise&lt;td::Unit&gt; promise) override {
+  promise.set_value(td::Unit());   <span class="comment">// always accepts — no validation</span>
+}</pre>
+
+<h2>Fix</h2>
+<p>Move the deduplication check before <code>rebroadcast()</code> in both paths:</p>
+
+<h3>Simple path fix</h3>
+<pre>if (overlay-&gt;is_delivered(broadcast_id)) { return; }     <span class="comment">// check first</span>
+overlay-&gt;register_delivered_broadcast(broadcast_id);
+if (will_rebroadcast) {
+  rebroadcast(overlay, bcast_src_adnl_id, ...);           <span class="comment">// then relay</span>
+}</pre>
+
+<h3>FEC path fix</h3>
+<pre>auto it = broadcasts_.find(broadcast_id);
+bool is_new = (it == broadcasts_.end());
+if (is_new &amp;&amp; overlay-&gt;is_delivered(broadcast_id)) { return; }   <span class="comment">// check before relay</span>
+if (will_rebroadcast) {
+  rebroadcast(overlay, bcast_src_adnl_id, ...);
+}</pre>
+
+<div class="footer">
+  TON Blockchain Contest Round 2 — Secondary scope finding (overlay/). Submitted by TesseraeVentures.
+</div>
+</div>
+</body>
+</html>

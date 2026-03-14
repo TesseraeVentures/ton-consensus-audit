@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TON Simplex — Finding 1: Honest Validator Self-Equivocation (alarm race)</title>
+<style>
+  :root { --red:#DC2626; --amber:#D97706; --green:#16A34A; --blue:#0088CC; --border:#E5E7EB; --code-bg:#F3F4F6; --text:#111827; --muted:#6B7280; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  @media print { body { background:white; } }
+  body { font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif; font-size:10pt; line-height:1.6; color:var(--text); background:#f0f0f0; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .page { max-width:820px; margin:32px auto; background:white; padding:48px 60px; box-shadow:0 2px 8px rgba(0,0,0,.12); }
+  .header { border-bottom:2px solid var(--blue); padding-bottom:16px; margin-bottom:24px; }
+  .header h1 { font-size:15pt; font-weight:700; }
+  .meta { font-size:8.5pt; color:var(--muted); margin-top:8px; }
+  .meta span { margin-right:16px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:8pt; font-weight:600; }
+  .badge-high { background:#FEF2F2; color:var(--red); border:1px solid #FECACA; }
+  h2 { font-size:11pt; font-weight:700; margin:22px 0 8px; }
+  h3 { font-size:10pt; font-weight:600; margin:14px 0 5px; }
+  p { margin-bottom:9px; }
+  ul,ol { margin:7px 0 9px 20px; }
+  li { margin-bottom:3px; }
+  pre,code { font-family:'SF Mono','Fira Code',Consolas,monospace; }
+  code { background:var(--code-bg); padding:1px 4px; border-radius:3px; font-size:8.5pt; }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:11px 13px; font-size:8pt; line-height:1.55; overflow-x:auto; margin:9px 0 13px; white-space:pre-wrap; word-break:break-word; }
+  .comment { color:#6B7280; }
+  .hl { background:#FEF9C3; }
+  .evidence { background:#F0FDF4; border:1px solid #86EFAC; border-radius:4px; padding:11px 13px; margin:11px 0; font-size:8.5pt; }
+  .evidence strong { color:var(--green); }
+  table { width:100%; border-collapse:collapse; margin:9px 0 13px; font-size:9pt; }
+  th { background:#F9FAFB; text-align:left; padding:6px 9px; border:1px solid var(--border); font-weight:600; }
+  td { padding:6px 9px; border:1px solid var(--border); vertical-align:top; }
+  .footer { border-top:1px solid var(--border); padding-top:12px; margin-top:28px; font-size:8pt; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="header">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+    <span class="badge badge-high">HIGH</span>
+    <h1>Honest Validator Self-Equivocation: SkipVote + NotarizeVote for the Same Slot</h1>
+  </div>
+  <div class="meta">
+    <span><strong>Repo:</strong> ton-blockchain/ton</span>
+    <span><strong>Branch:</strong> testnet</span>
+    <span><strong>Commit:</strong> <code>3bb6abc</code></span>
+    <span><strong>Scope:</strong> Primary — validator/consensus/simplex/</span>
+    <span><strong>Date:</strong> 2026-03-14</span>
+  </div>
+</div>
+
+<h2>Summary</h2>
+<p>Three linked bugs in <code>consensus.cpp</code> and <code>pool.cpp</code> allow an honest validator to broadcast both a <code>SkipVote</code> and a <code>NotarizeVote</code> for the same slot during normal operation. The equivocation is silently ignored by all peers — no <code>MisbehaviorReport</code> is generated. Under conditions where block validation exceeds the alarm interval, every validator equivocates simultaneously, causing complete liveness failure for the affected consensus rounds.</p>
+
+<h2>Root Cause</h2>
+
+<h3>Bug A — alarm() uses insufficient guard</h3>
+<p><code>ConsensusImpl::alarm()</code> broadcasts <code>SkipVote</code> for any slot where <code>voted_final = false</code>, without checking whether the validator has already committed to notarizing that slot:</p>
+
+<pre><span class="comment">// consensus.cpp — alarm(), lines 144-150</span>
+for (td::uint32 i = range_start; i &lt; window_end; ++i) {
+  auto slot = state_-&gt;slot_at(i);
+  if (slot &amp;&amp; !slot-&gt;state-&gt;<span class="hl">voted_final</span>) {  <span class="comment">// BUG: must also check !voted_notar &amp;&amp; !voted_skip</span>
+    owning_bus().publish&lt;BroadcastVote&gt;(SkipVote{i}).start().detach();
+    slot-&gt;state-&gt;voted_skip = true;
+  }
+}</pre>
+
+<h3>Bug B — try_notarize() does not check voted_skip after resuming</h3>
+<p><code>try_notarize()</code> is a coroutine with three <code>co_await</code> suspension points. The <code>voted_notar</code> flag is set only after all three complete. If <code>alarm()</code> fires during the <code>ValidationRequest</code> suspension, <code>voted_skip = true</code> is set, but the coroutine resumes without checking it:</p>
+
+<pre><span class="comment">// consensus.cpp — try_notarize() (after co_await ValidationRequest resumes)</span>
+auto validation_result = co_await owning_bus().publish&lt;ValidationRequest&gt;(...);
+<span class="comment">// alarm() can fire here: voted_skip = true, SkipVote broadcast</span>
+<span class="comment">// BUG B: no check for voted_skip before the next two lines</span>
+slot.state-&gt;voted_notar = candidate-&gt;id;
+owning_bus().publish&lt;BroadcastVote&gt;(NotarizeVote{candidate-&gt;id}).start().detach();</pre>
+
+<p><strong>Race sequence:</strong></p>
+<ol>
+  <li>Candidate arrives → <code>try_notarize(slot N)</code> starts, suspends at <code>co_await ValidationRequest</code></li>
+  <li>Alarm fires → slot N has <code>voted_final=false</code> → broadcasts <code>SkipVote{N}</code>, sets <code>voted_skip=true</code></li>
+  <li>Validation completes → coroutine resumes → broadcasts <code>NotarizeVote{N}</code></li>
+</ol>
+<p>Both votes are now in flight from the same validator.</p>
+
+<h3>Bug C — check_invariants() does not detect NotarizeVote + SkipVote combination</h3>
+<p><code>Tsentrizbirkom::check_invariants()</code> in <code>pool.cpp</code> detects two conflicting vote combinations but is missing the third:</p>
+
+<pre><span class="comment">// pool.cpp — check_invariants()</span>
+if (notarize_.has_value() &amp;&amp; finalize_.has_value() &amp;&amp; notarize_-&gt;vote.id != finalize_-&gt;vote.id)
+  return ConflictingVotes::create(...);    <span class="comment">// ✓ detected</span>
+if (finalize_.has_value() &amp;&amp; skip_.has_value())
+  return ConflictingVotes::create(...);    <span class="comment">// ✓ detected</span>
+<span class="comment">// MISSING: NotarizeVote + SkipVote is also a conflicting combination in Simplex</span>
+<span class="comment">// if (notarize_.has_value() &amp;&amp; skip_.has_value()) → ConflictingVotes   ← not present</span></pre>
+
+<p>The equivocating validator's votes are accepted without any <code>MisbehaviorReport</code>, and its weight is counted towards both <code>notarize_weight</code> and <code>skip_weight</code> for the same slot.</p>
+
+<h2>Demonstrated Impact</h2>
+<p>Tested on commit <code>3bb6abc</code> using the in-tree <code>test-consensus</code> binary with 8 equal-weight validators, 1.5–2.5 s validation time, 200 ms block target (requires Clang 18+ to build — GCC cannot compile this codebase):</p>
+
+<div class="evidence">
+  <strong>PoC output — pool.cpp:525 WARNING:</strong><br><br>
+  <code>Dropping NotarizeVote{id={60, +7z0gpDDmAsyzTc3oLsh7f+82mx3OuXOMCuNHuCwvOM=}} from validator 2 at lzPRai9kr3RHHmjlDhvucvghdTtfT0W1EsHWV7G+Muk= which references a finalized slot</code><br><br>
+  Slot 60 was already finalised via <code>SkipCert</code> when this <code>NotarizeVote</code> arrived, proving validator 2 broadcast both vote types for the same slot. Identical pattern observed across all 8 validators.
+</div>
+
+<p><strong>523 confirmed equivocating (validator, slot) pairs</strong> observed in a single 30-second run. Equivocating validators have <code>voted_skip=true</code>, which blocks <code>try_vote_final()</code> from issuing <code>FinalizeVote</code> — every candidate block for an affected slot is abandoned. The result is severe throughput degradation across the run.</p>
+
+<h2>Reproduction</h2>
+<pre>git clone --branch testnet https://github.com/ton-blockchain/ton.git
+cd ton &amp;&amp; mkdir build-clang &amp;&amp; cd build-clang
+CC=clang CXX=clang++ cmake .. -DCMAKE_BUILD_TYPE=Release -DTON_USE_ROCKSDB=OFF
+cmake --build . --target test-consensus -j$(nproc)
+
+<span class="comment"># Clang 18+ required</span>
+./test/consensus/test-consensus \
+  --validation-time 1.5:2.5 \
+  --target-rate-ms 200 \
+  --n-nodes 8 \
+  --duration 30 \
+  -v 2 2&gt;&amp;1 | grep "Dropping NotarizeVote.*finalized slot"</pre>
+
+<p>Expected output: multiple <code>WARNING [pool.cpp:525]</code> lines showing <code>NotarizeVote</code> arrivals for already-skipped slots, confirming each validator sent both vote types.</p>
+
+<h2>Fix</h2>
+
+<p><strong>Bug A</strong> — add guards in <code>alarm()</code>:</p>
+<pre>if (slot &amp;&amp; !slot-&gt;state-&gt;voted_final
+         &amp;&amp; !slot-&gt;state-&gt;voted_notar    <span class="comment">// new</span>
+         &amp;&amp; !slot-&gt;state-&gt;voted_skip) {  <span class="comment">// new</span>
+  owning_bus().publish&lt;BroadcastVote&gt;(SkipVote{i}).start().detach();
+  slot-&gt;state-&gt;voted_skip = true;
+}</pre>
+
+<p><strong>Bug B</strong> — check <code>voted_skip</code> in <code>try_notarize()</code> after all suspension points:</p>
+<pre>auto validation_result = co_await owning_bus().publish&lt;ValidationRequest&gt;(...);
+if (slot.state-&gt;voted_skip) { co_return {}; }  <span class="comment">// new guard</span>
+slot.state-&gt;voted_notar = candidate-&gt;id;
+owning_bus().publish&lt;BroadcastVote&gt;(NotarizeVote{candidate-&gt;id}).start().detach();</pre>
+
+<p><strong>Bug C</strong> — add the missing case to <code>check_invariants()</code> in <code>pool.cpp</code>:</p>
+<pre>if (notarize_.has_value() &amp;&amp; skip_.has_value()) {
+  return ConflictingVotes::create(
+    notarize_-&gt;serialize_as_proof(), skip_-&gt;serialize_as_proof());
+}</pre>
+
+<div class="footer">
+  TON Blockchain Contest Round 2 — Primary scope finding. Submitted by TesseraeVentures.
+</div>
+</div>
+</body>
+</html>
