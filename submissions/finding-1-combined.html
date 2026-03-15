@@ -357,8 +357,8 @@
     </div>
   </div>
 
-  <div class="severity-strip">
-    ⚠ Severity: High — Safety invariant violation, no Byzantine actor required
+  <div class="severity-strip" style="background: var(--amber);">
+    ⚠ Severity: Medium — Correctness violation with bounded liveness impact
   </div>
 
   <!-- CONTENT -->
@@ -368,7 +368,7 @@
     <p>
       An honest Simplex validator can broadcast both a <code>SkipVote</code> and a <code>NotarizeVote</code>
       for the same consensus slot, producing a self-equivocation without any compromise or Byzantine behaviour.
-      This violates the core Simplex safety invariant: <em>a validator must vote at most once per slot</em>.
+      This violates the single-vote-per-slot invariant in the consensus implementation.
     </p>
     <p>
       The bug manifests through two independent code paths sharing the same root cause — an incomplete
@@ -388,12 +388,16 @@
     <table>
       <tr><th style="width:35%">Property</th><th>Assessment</th></tr>
       <tr>
-        <td>Safety violation</td>
-        <td>Yes — self-equivocation from an honest validator; breaks Simplex's single-vote-per-slot invariant</td>
+        <td>Chain safety</td>
+        <td>Not directly affected — Simplex's 2/3 weight threshold prevents forks regardless of equivocation</td>
       </tr>
       <tr>
-        <td>Liveness impact</td>
-        <td>Yes — equivocating votes can poison slot pools; all N honest validators produce conflicting evidence simultaneously</td>
+        <td>Correctness</td>
+        <td>Violated — same validator's weight counts toward both <code>skip_weight</code> and <code>notarize_weight</code> for the same slot; <code>check_invariants()</code> fails to detect this combination</td>
+      </tr>
+      <tr>
+        <td>Liveness</td>
+        <td>Degraded — affected slots' candidate blocks are abandoned (skipped instead of notarized), reducing throughput under load</td>
       </tr>
       <tr>
         <td>Trigger (Path A)</td>
@@ -401,7 +405,7 @@
       </tr>
       <tr>
         <td>Trigger (Path B)</td>
-        <td>Any leader-window validator restart — fires 100% of the time the gremlin kills the leader (19/20 in test)</td>
+        <td>Any leader-window validator restart — fires deterministically (19/20 in test)</td>
       </tr>
       <tr>
         <td>Affected scope</td>
@@ -456,9 +460,8 @@
     <div class="evidence-box evidence-pass">
       <div class="evidence-label">✓ Dynamically Confirmed</div>
       <code>pool.cpp:525 WARNING</code> — <em>"Dropping NotarizeVote{id={62, WQS7+...}} from validator 6 ... which references a finalized slot"</em><br>
-      Observed <strong>1–500+ events per 30-second run</strong>. All 8 validators affected across multiple runs.
-      The slot finalised via <code>SkipCert</code> (produced from the equivocating validator's own <code>SkipVote</code>)
-      before the <code>NotarizeVote</code> arrived — proving both vote types were broadcast for the same slot.
+      Observed <strong>10–25+ equivocating (validator, slot) pairs per 30-second run</strong>. All 8 validators affected.
+      The slot finalised via <code>SkipCert</code> before the <code>NotarizeVote</code> arrived — confirming both vote types were broadcast for the same slot by the same validator.
     </div>
 
     <hr class="divider">
