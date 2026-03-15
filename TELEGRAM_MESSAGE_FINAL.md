@@ -1,120 +1,128 @@
 # TON Contest — Submission Messages
-# One message per finding. Primary scope (1–4) first, secondary scope (5) second.
-# Attach the corresponding HTML file as PDF to each message.
+# One message per finding. Attach the corresponding PDF + the PoC archive to each message.
+# Submit to @ton_bug_bounty_contest
+# Attach: ton-consensus-audit-poc.tar.gz (PoC scripts + Dockerfile + README)
 
 ---
 
 ## Message 1 of 5 — Finding 1 (HIGH, Primary)
-### Attach: submissions/finding-1-alarm-equivocation.html (as PDF)
+### Attach: submissions/finding-1-alarm-equivocation.pdf + ton-consensus-audit-poc.tar.gz
 
 ---
 
-**[HIGH] Honest Validator Self-Equivocation: SkipVote + NotarizeVote for the Same Slot**
+**Title:** Honest Validator Self-Equivocation via alarm() Race
 
-**Repository:** ton-blockchain/ton · branch testnet · commit 3bb6abc  
-**Scope:** validator/consensus/simplex/ (primary)
+**Impact:** All honest validators simultaneously equivocate (broadcast SkipVote + NotarizeVote for the same slot) during normal operation whenever block validation exceeds the alarm interval. Equivocation is silently accepted — no MisbehaviorReport generated. Under sustained load, this causes complete liveness failure for affected rounds.
 
-**Summary:**
-Three linked bugs in `consensus.cpp` and `pool.cpp` allow an honest validator to broadcast both a SkipVote and a NotarizeVote for the same slot during normal operation. Equivocation is silently ignored by peers — no MisbehaviorReport is generated. Under conditions where block validation exceeds the alarm interval, every validator equivocates simultaneously, causing complete liveness failure for the affected rounds.
+**Description:**
+Three linked bugs in `consensus.cpp` and `pool.cpp` (testnet branch, commit 3bb6abc):
+- **Bug A** (`consensus.cpp:144-150`): `alarm()` guard checks only `!voted_final`, missing `!voted_notar && !voted_skip`. Fires SkipVote during pending notarization.
+- **Bug B** (`consensus.cpp:232-235`): `try_notarize()` does not check `voted_skip` after `co_await ValidationRequest`. Fires NotarizeVote after alarm already set `voted_skip = true`.
+- **Bug C** (`pool.cpp:209-217`): `check_invariants()` missing `NotarizeVote + SkipVote` case — equivocation accepted silently.
 
-**Bug A** (`alarm()`): Guard checks only `!voted_final`, missing `!voted_notar && !voted_skip`. Fires SkipVote during a pending notarization.
+**Reproduction:**
+```
+docker run --rm ghcr.io/tesseraeventures/ton-consensus-audit:latest
+```
+Runs in 30 seconds. Expected: 10-25+ equivocating (validator, slot) pairs across all 8 validators, evidenced by `pool.cpp:525` WARNING lines.
 
-**Bug B** (`try_notarize()`): Does not check `voted_skip` after resuming from `co_await ValidationRequest`. Fires NotarizeVote after alarm has already set `voted_skip = true`.
+Or manually: build `test-consensus` from testnet branch with Clang 18+, then:
+```
+./test-consensus --validation-time 1.5:2.5 --target-rate-ms 200 --n-nodes 8 --duration 30 -v 2
+```
+Grep for `"Dropping NotarizeVote.*finalized slot"`.
 
-**Bug C** (`check_invariants()`): `NotarizeVote + SkipVote` combination is absent from the invariant check. The equivocation is accepted without any misbehavior report.
+Source + Dockerfile: https://github.com/TesseraeVentures/ton-consensus-audit
 
-**Reproduced:** 523 confirmed equivocating (validator, slot) pairs in a single 30-second run across all 8 validators. Command and evidence in attached report.
-
-Build requires Clang 18+ (GCC cannot compile this codebase).
+Full analysis in attached PDF.
 
 ---
 
 ## Message 2 of 5 — Finding 2 (HIGH, Primary)
-### Attach: submissions/finding-2-startup-equivocation.html (as PDF)
+### Attach: submissions/finding-2-startup-equivocation.pdf
 
 ---
 
-**[HIGH] start_up() Bootstrap Replay Equivocates on Every Validator Restart**
+**Title:** start_up() Bootstrap Replay Equivocates on Every Validator Restart
 
-**Repository:** ton-blockchain/ton · branch testnet · commit 3bb6abc  
-**Scope:** validator/consensus/simplex/consensus.cpp (primary)
+**Impact:** Any validator that restarts after casting a NotarizeVote in an unfinished leader window immediately equivocates by broadcasting SkipVote for that same slot. Fires deterministically on every restart matching this state — no race condition required.
 
-**Summary:**
-The same missing guard as the alarm() race (Finding 1) also exists in the startup bootstrap replay path — but fires deterministically on every restart, not under a race condition. Any validator that restarts after having cast a NotarizeVote in an unfinished leader window immediately broadcasts SkipVote for that slot on startup.
+**Description:**
+Same missing guard as Finding 1, different code path (`consensus.cpp:82-91`). `start_up()` loads `voted_notar` from persistent DB, then broadcasts SkipVote for all non-final slots using only `!voted_final` guard — missing `!voted_notar`. Pre-crash NotarizeVote remains in peers' pools → restart broadcasts SkipVote → equivocation.
 
-**Root cause:** `start_up()` loads `voted_notar` from persistent DB (lines 47–80), then broadcasts SkipVote for all non-final slots in the current unannouncedwindow (lines 82–91) with the guard `!voted_final` only — missing `!voted_notar`.
+**Reproduction:**
+Same Docker image as Finding 1:
+```
+docker run --rm ghcr.io/tesseraeventures/ton-consensus-audit:latest
+```
+PART 2 of the output demonstrates startup equivocation.
 
-**Trigger:** Validator crashes or is restarted after sending NotarizeVote{slot X} in window W, before window W advances. Pre-crash NotarizeVote{X} remains in peers' pools. Restart broadcasts SkipVote{X}. Equivocation.
+Alternatively, inspect `consensus.cpp` lines 82-91: the loop broadcasts SkipVote with guard `!voted_final` only.
 
-This is the third location of the same missing-guard bug. Unlike the runtime race, no timing coincidence is required — it fires unconditionally on every restart matching this state.
-
-Full analysis and fix in attached report.
+Full analysis in attached PDF.
 
 ---
 
 ## Message 3 of 5 — Finding 3 (MEDIUM, Primary)
-### Attach: submissions/finding-3-conflicting-candidate-no-evidence.html (as PDF)
+### Attach: submissions/finding-3-conflicting-candidate-no-evidence.pdf
 
 ---
 
-**[MEDIUM] ConflictingCandidateAndCertificate Misbehavior Stores No Cryptographic Evidence**
+**Title:** ConflictingCandidateAndCertificate Misbehavior Stores No Cryptographic Evidence
 
-**Repository:** ton-blockchain/ton · branch testnet · commit 3bb6abc  
-**Scope:** validator/consensus/simplex/pool.cpp + misbehavior.h (primary)
+**Impact:** A Byzantine leader can propose candidates conflicting with existing certificates with zero on-chain consequence. Detection is local-only; the misbehavior cannot be proven to other nodes or the elector contract.
 
-**Summary:**
-Every call site that creates a `ConflictingCandidateAndCertificate` misbehavior report passes no arguments — the candidate and conflicting certificate are commented out at all four call sites (pool.cpp lines 646, 656, 666, 676). The factory `create()` stores nothing and produces an empty report.
+**Description:**
+All four call sites creating `ConflictingCandidateAndCertificate` in `pool.cpp` (lines 646, 656, 666, 676) pass no arguments — the candidate and certificate parameters are commented out. The `create()` factory stores nothing.
 
-A Byzantine leader can propose candidates that conflict with existing certificates and face zero on-chain consequence: the detection is local only and the misbehavior cannot be proven to other nodes or to the elector contract.
+**Reproduction:**
+Inspect `pool.cpp` lines 646, 656, 666, 676 and `misbehavior.h` create() at commit 3bb6abc. All four call sites have empty constructors.
 
-The four call sites cover: candidate with invalid parent chain, candidate conflicting with notarized block, candidate with wrong parent at finalization boundary, and candidate whose parent is notarized as a different block.
-
-Fix: add candidate and certificate parameters to `create()`, store them, implement serialization.
-
-Full analysis in attached report.
+Full analysis in attached PDF.
 
 ---
 
 ## Message 4 of 5 — Finding 4 (MEDIUM, Primary)
-### Attach: submissions/finding-4-fixme-misbehaviors.html (as PDF)
+### Attach: submissions/finding-4-fixme-misbehaviors.pdf
 
 ---
 
-**[MEDIUM] Three Misbehavior Detection Code Paths Silently Drop Byzantine Behaviour**
+**Title:** Three Misbehavior Detection Code Paths Silently Drop Byzantine Behaviour
 
-**Repository:** ton-blockchain/ton · branch testnet · commit 3bb6abc  
-**Scope:** validator/consensus/simplex/consensus.cpp (primary)
+**Impact:** A Byzantine leader can degrade liveness — forcing re-validation, wasting bandwidth — with no slashing risk. Three detectable misbehaviors are silently ignored.
 
-**Summary:**
-Three detectable Byzantine conditions in `consensus.cpp` are silently dropped with `// FIXME: Report misbehavior` comments:
+**Description:**
+Three `// FIXME: Report misbehavior` comments in `consensus.cpp`:
+1. **Line 174:** Candidate with `parent_slot >= own_slot` — rejected locally, no report.
+2. **Line 180:** Leader sends two different candidates for same slot — silently ignored, no report.
+3. **Line 227:** Block candidate fails validation (CandidateReject) — logged as WARNING, no report.
 
-1. **consensus.cpp:174** — Candidate with `parent_slot ≥ own_slot` (invalid block structure). Rejected locally, no report filed.
+**Reproduction:**
+Inspect `consensus.cpp` lines 174, 180, 227 at commit 3bb6abc. All three have `// FIXME` comments with no report implementation.
 
-2. **consensus.cpp:180** — Leader sends two different candidates for the same slot (proposal equivocation). Second candidate silently ignored, no report filed.
-
-3. **consensus.cpp:227** — Block candidate fails full validation (`CandidateReject`). Logged as WARNING, no misbehavior report filed.
-
-All three cases allow a Byzantine leader to degrade liveness — forcing re-validation, occupying ValidationRequest slots, wasting bandwidth — with no slashing risk. The evidence needed for a report is available in scope at each location.
-
-Full analysis and proposed fix in attached report.
+Full analysis in attached PDF.
 
 ---
 
 ## Message 5 of 5 — Finding 5 (MEDIUM, Secondary)
-### Attach: submissions/finding-5-twostep-amplification.html (as PDF)
+### Attach: submissions/finding-5-twostep-amplification.pdf
 
 ---
 
-**[MEDIUM] TwoStep Broadcast: Deduplication Check Placed After Rebroadcast**
+**Title:** TwoStep Broadcast: Deduplication Check Placed After Rebroadcast
 
-**Repository:** ton-blockchain/ton · branch testnet · commit 3bb6abc  
-**Scope:** overlay/broadcast-twostep.cpp (secondary)
+**Impact:** Any node can replay a previously seen broadcast within the ±20s timestamp window, causing every relay to forward the duplicate to all N-1 peers before recognizing it. For N=300 overlay, each replay generates ~89,000 messages.
 
-**Summary:**
-In both the simple (line 314) and FEC (line 347) paths of `process_broadcast()`, `rebroadcast()` is called before `is_delivered()`. Any node can replay a previously seen broadcast within the ±20-second timestamp window and cause every relay node to forward the duplicate to all N−1 peers before recognising it as a duplicate.
+**Description:**
+In `overlay/broadcast-twostep.cpp`, both simple (line 314) and FEC (line 347) paths of `process_broadcast()` call `rebroadcast()` before `is_delivered()`. No per-sender deduplication or rate limiting exists on the relay path.
 
-For an N=300 overlay, each replay generates 89,402 messages across the network. No per-sender deduplication or rate limiting exists on the relay path. `check_broadcast()` in `private-overlay.cpp` unconditionally accepts all overlay broadcasts.
+**Reproduction:**
+Inspect `broadcast-twostep.cpp` lines 313-316 (simple path) and 346-352 (FEC path) at commit 3bb6abc. `rebroadcast()` precedes `is_delivered()` in both.
 
-**Fix:** move `is_delivered()` check before `rebroadcast()` in both paths.
+Or run:
+```
+docker run --rm ghcr.io/tesseraeventures/ton-consensus-audit:latest \
+  python3 /audit/poc/test_twostep_amplification.py --check-source-only
+```
 
-Full analysis with amplification table in attached report.
+Full analysis in attached PDF.
