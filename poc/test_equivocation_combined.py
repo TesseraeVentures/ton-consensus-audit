@@ -43,13 +43,20 @@ from collections import defaultdict
 # Build / binary resolution
 # ──────────────────────────────────────────────────
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+AUDIT_ROOT = Path(__file__).resolve().parents[1]  # ton-consensus-audit/
+REPO_ROOT = AUDIT_ROOT  # kept for compat
 
 def find_binary(build_dir: Path | None) -> Path:
     candidates = [
         build_dir / "test" / "consensus" / "test-consensus" if build_dir else None,
-        REPO_ROOT / "build-clang" / "test" / "consensus" / "test-consensus",
-        REPO_ROOT / "build" / "test" / "consensus" / "test-consensus",
+        # ton/ cloned inside the audit repo (recommended layout)
+        AUDIT_ROOT / "ton" / "build-clang" / "test" / "consensus" / "test-consensus",
+        AUDIT_ROOT / "ton" / "build" / "test" / "consensus" / "test-consensus",
+        # ton/ cloned as sibling of the audit repo
+        AUDIT_ROOT.parent / "ton" / "build-clang" / "test" / "consensus" / "test-consensus",
+        AUDIT_ROOT.parent / "ton" / "build" / "test" / "consensus" / "test-consensus",
+        # Legacy: build-clang at parent level
+        AUDIT_ROOT.parent / "build-clang" / "test" / "consensus" / "test-consensus",
     ]
     for c in candidates:
         if c and c.exists():

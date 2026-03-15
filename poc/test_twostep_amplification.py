@@ -21,7 +21,21 @@ import shutil
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+AUDIT_ROOT = Path(__file__).resolve().parents[1]  # ton-consensus-audit/
+
+def _find_ton_root() -> Path:
+    """Search common layouts for the TON source tree."""
+    candidates = [
+        AUDIT_ROOT / "ton",
+        AUDIT_ROOT.parent / "ton",
+        AUDIT_ROOT.parent,
+    ]
+    for c in candidates:
+        if (c / "overlay" / "broadcast-twostep.cpp").exists():
+            return c
+    return candidates[0]  # default for error message
+
+REPO_ROOT = _find_ton_root()
 
 # --- Static analysis: verify the vulnerable lines exist ---
 

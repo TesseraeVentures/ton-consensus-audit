@@ -18,8 +18,22 @@ import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-TEST_CONSENSUS = REPO_ROOT / "build-clang" / "test" / "consensus" / "test-consensus"
+AUDIT_ROOT = Path(__file__).resolve().parents[1]  # ton-consensus-audit/
+
+def _find_binary() -> Path:
+    """Search common layouts for the test-consensus binary."""
+    candidates = [
+        AUDIT_ROOT / "ton" / "build-clang" / "test" / "consensus" / "test-consensus",
+        AUDIT_ROOT / "ton" / "build" / "test" / "consensus" / "test-consensus",
+        AUDIT_ROOT.parent / "ton" / "build-clang" / "test" / "consensus" / "test-consensus",
+        AUDIT_ROOT.parent / "build-clang" / "test" / "consensus" / "test-consensus",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return candidates[0]  # default path for error message
+
+TEST_CONSENSUS = _find_binary()
 
 # Triggering parameters:
 # - validation-time must exceed alarm interval to guarantee race
