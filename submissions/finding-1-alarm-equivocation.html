@@ -110,6 +110,12 @@ if (finalize_.has_value() &amp;&amp; skip_.has_value())
 <p><strong>523 confirmed equivocating (validator, slot) pairs</strong> observed in a single 30-second run. Equivocating validators have <code>voted_skip=true</code>, which blocks <code>try_vote_final()</code> from issuing <code>FinalizeVote</code> — every candidate block for an affected slot is abandoned. The result is severe throughput degradation across the run.</p>
 
 <h2>Reproduction</h2>
+<h3>Docker (Recommended — no build required)</h3>
+<pre>docker run --rm ghcr.io/tesseraeventures/ton-consensus-audit:latest</pre>
+<p>Runs in 30 seconds. Shows equivocating (validator, slot) pairs with evidence lines.</p>
+<p>Source + Dockerfile: <a href="https://github.com/TesseraeVentures/ton-consensus-audit">github.com/TesseraeVentures/ton-consensus-audit</a></p>
+
+<h3>Manual Build (Alternative)</h3>
 <pre>git clone --branch testnet https://github.com/ton-blockchain/ton.git
 cd ton &amp;&amp; mkdir build-clang &amp;&amp; cd build-clang
 CC=clang CXX=clang++ cmake .. -DCMAKE_BUILD_TYPE=Release -DTON_USE_ROCKSDB=OFF

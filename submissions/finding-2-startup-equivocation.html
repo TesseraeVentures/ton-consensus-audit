@@ -100,6 +100,13 @@ if (auto window = bus.first_nonannounced_window) {
 <p>A validator restart — even a routine one — silently equivocates if it had a pending <code>NotarizeVote</code> in its window. Because the equivocation is not detected by <code>check_invariants()</code> (missing case: <code>NotarizeVote + SkipVote</code>), no misbehavior report is filed. The validator's weight is counted toward both <code>notarize_weight</code> and <code>skip_weight</code> for the same slot, distorting certificate formation. The affected slot's candidate block is abandoned.</p>
 <p>In practice, validators in production networks restart regularly (software upgrades, infrastructure maintenance, hardware failures). This bug means that under Simplex consensus, routine restarts carry a consensus safety cost that is invisible to the network.</p>
 
+<h2>Reproduction</h2>
+<h3>Docker</h3>
+<pre>docker run --rm ghcr.io/tesseraeventures/ton-consensus-audit:latest</pre>
+<p>PART 2 of the output demonstrates startup equivocation evidence.</p>
+<h3>Source Inspection</h3>
+<p>Inspect <code>consensus.cpp</code> lines 82–91 at commit <code>3bb6abc</code>. The loop broadcasts <code>SkipVote</code> with guard <code>!voted_final</code> only — missing <code>!voted_notar</code>.</p>
+
 <h2>Fix</h2>
 <p>Add <code>!voted_notar</code> to the broadcast guard in <code>start_up()</code>:</p>
 <pre><span class="comment">// consensus.cpp — start_up(), line 87 fix</span>

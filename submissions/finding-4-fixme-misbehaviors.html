@@ -91,6 +91,10 @@ if (validation_result.has&lt;CandidateReject&gt;()) {
 
 <p>These three paths represent a systematic gap in the misbehavior accountability layer. Individually, each is a moderate nuisance. Combined, a Byzantine leader can cycle through all three strategies to maximise disruption while remaining invisible to the slashing system.</p>
 
+<h2>Reproduction</h2>
+<p>Inspect <code>consensus.cpp</code> lines 174, 180, 227 at commit <code>3bb6abc</code>. All three have <code>// FIXME: Report misbehavior</code> comments with no implementation.</p>
+<p>Source: <a href="https://github.com/TesseraeVentures/ton-consensus-audit">github.com/TesseraeVentures/ton-consensus-audit</a></p>
+
 <h2>Fix</h2>
 <p>Implement misbehavior reporting at each location. For cases 1 and 2, the evidence is available in scope (the candidate itself and, for case 2, the earlier <code>pending_block</code>). For case 3, the <code>CandidateReject</code> reason and the candidate are both available:</p>
 <pre><span class="comment">// Case 2 fix — dual-candidate equivocation</span>

@@ -103,6 +103,13 @@ void check_broadcast(..., td::Promise&lt;td::Unit&gt; promise) override {
   promise.set_value(td::Unit());   <span class="comment">// always accepts — no validation</span>
 }</pre>
 
+<h2>Reproduction</h2>
+<h3>Docker</h3>
+<pre>docker run --rm ghcr.io/tesseraeventures/ton-consensus-audit:latest \
+  python3 /audit/poc/test_twostep_amplification.py --check-source-only</pre>
+<h3>Source Inspection</h3>
+<p>Inspect <code>broadcast-twostep.cpp</code> lines 313–316 (simple path) and 346–352 (FEC path) at commit <code>3bb6abc</code>. <code>rebroadcast()</code> precedes <code>is_delivered()</code> in both paths.</p>
+
 <h2>Fix</h2>
 <p>Move the deduplication check before <code>rebroadcast()</code> in both paths:</p>
 

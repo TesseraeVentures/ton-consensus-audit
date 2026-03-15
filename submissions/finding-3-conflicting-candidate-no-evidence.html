@@ -98,6 +98,10 @@ return resolve_with(ConflictingCandidateAndCertificate::create(
 </ul>
 <p>A Byzantine leader can freely propose candidates that conflict with existing certificates. Each conflicting proposal is detected locally (resolver returns the misbehavior) but has no deterrent effect — the leader faces no penalty and the network gains no accountability signal.</p>
 
+<h2>Reproduction</h2>
+<p>Inspect <code>pool.cpp</code> lines 646, 656, 666, 676 and <code>misbehavior.h</code> <code>create()</code> at commit <code>3bb6abc</code>. All four call sites pass empty constructors.</p>
+<p>Source: <a href="https://github.com/TesseraeVentures/ton-consensus-audit">github.com/TesseraeVentures/ton-consensus-audit</a></p>
+
 <h2>Fix</h2>
 <p>Add candidate and certificate parameters to <code>ConflictingCandidateAndCertificate::create()</code> and store them. Implement serialisation so the report can be forwarded to other nodes and submitted on-chain:</p>
 <pre><span class="comment">// misbehavior.h — proposed fix</span>

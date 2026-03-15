@@ -535,6 +535,12 @@
     <hr class="divider">
 
     <h2>Reproduction</h2>
+<h3>Docker (Recommended — no build required)</h3>
+<pre>docker run --rm ghcr.io/tesseraeventures/ton-consensus-audit:latest</pre>
+<p>Runs in 30 seconds. Reproduces both alarm race and startup equivocation findings.</p>
+<p>Source + Dockerfile: <a href="https://github.com/TesseraeVentures/ton-consensus-audit">github.com/TesseraeVentures/ton-consensus-audit</a></p>
+
+<h3>Manual Build (Alternative)</h3>
 
     <div class="poc-box">
       <strong>PoC Script:</strong> <code>poc/test_equivocation_combined.py</code><br>
