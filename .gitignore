@@ -1,0 +1,10 @@
+# Binaries (use Docker instead)
+test-consensus
+
+# Build artifacts
+ton/
+build/
+build-clang/
+
+# OS files
+.DS_Store
